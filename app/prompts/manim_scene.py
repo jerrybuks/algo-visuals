@@ -15,6 +15,17 @@ Screen: 14 wide × 8 tall. Center = (0,0,0). x ∈ [-7,7], y ∈ [-4,4].
   CONTENT:   y ∈ [-1.8, 2.6], x ∈ [-6.2, 6.2]
   NARRATION: .to_edge(DOWN, buff=0.35)        y ≈ -3.4
 
+=== BOUNDARY RULE — nothing may leave the screen ===
+ALL visuals must stay within: x ∈ [-6.2, 6.2]  and  y ∈ [-1.8, 2.6]
+This applies to every move_to(), shift(), and to_edge() call.
+Never hardcode x outside ±6.2 or y outside the content zone.
+For wide structures (many nodes/cells), scale down cell_size or font_size so
+everything fits. Use .scale() after building if the group is too wide.
+Pattern to keep a group on screen:
+  group.move_to(ORIGIN)
+  if group.width > 12.4:
+      group.scale(12.4 / group.width)
+
 === Z-ORDER RULE ===
 In VGroup, later objects render ON TOP. A filled shape hides any Text added before it.
 ALWAYS: VGroup(shape, text) — shape first, text second. No exceptions.
@@ -59,7 +70,7 @@ After the highlight is done, reset both:
 - Tex, MathTex, numpy, f-strings with backslashes
 - buff= inside VGroup(), Square(), Circle(), Rectangle(), Text(), CurvedArrow(), Arrow(), Line() constructors
   (buff only belongs in .arrange(RIGHT, buff=X) or .next_to(..., buff=X))
-- Content below y = -1.8
+- Content outside the content zone: y < -1.8, y > 2.6, x < -6.2, x > 6.2
 
 === OPENING RULE — data on screen from frame 1 ===
 Before the first narration section, build and self.add() the full initial data structure

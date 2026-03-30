@@ -278,12 +278,27 @@ def _validate_manim_code(code: str) -> str | None:
 
     import re as _re
 
-    # Check for hardcoded y-coordinates that place content in the narration zone
-    bad_y = _re.findall(r'move_to\(\[[-\d., ]+,\s*(-[3-9]\.\d+|-[2-9]\d+\.\d+)', code)
-    if bad_y:
+    # Check for hardcoded coordinates that place content outside the safe zone
+    # y < -1.8 (narration zone / off bottom)
+    bad_y_low = _re.findall(r'move_to\(\s*\[[-\d. ]+,\s*(-[2-9]\d*\.\d+|-[2-9]\d+)', code)
+    if bad_y_low:
         return (
-            f"Layout violation: content placed at y={bad_y[0]} which is in the narration zone "
-            f"(y < -1.8). Move all visuals into the CONTENT ZONE: y ∈ [-1.8, 2.6]."
+            f"Layout violation: content placed at y={bad_y_low[0]} which is below the content zone. "
+            f"Keep all visuals within y ∈ [-1.8, 2.6]."
+        )
+    # y > 2.6 (above content zone)
+    bad_y_high = _re.findall(r'move_to\(\s*\[[-\d. ]+,\s*([3-9]\.\d+|[3-9]\d+\.\d+)', code)
+    if bad_y_high:
+        return (
+            f"Layout violation: content placed at y={bad_y_high[0]} which is above the content zone. "
+            f"Keep all visuals within y ∈ [-1.8, 2.6]."
+        )
+    # x < -6.2 or x > 6.2 (off left/right)
+    bad_x = _re.findall(r'move_to\(\s*\[(-[7-9]\.\d+|-[7-9]\d*\.|[7-9]\.\d+|[7-9]\d*\.)\d*,', code)
+    if bad_x:
+        return (
+            f"Layout violation: content placed at x={bad_x[0]}... which is outside the screen. "
+            f"Keep all visuals within x ∈ [-6.2, 6.2]."
         )
 
     # Detect z-order bug: Circle/Square with fill_opacity=1 added to VGroup AFTER a Text —
