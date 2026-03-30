@@ -22,104 +22,96 @@ from app.services import db
 from app.utils.exceptions import AIGenerationError
 
 
-async def _generate_narration(description: str) -> tuple[list[str], dict]:
-    """Returns (sentences, algorithm_info)."""
+async def _generate_narration(description: str, feedback: str | None = None) -> tuple[list[str], dict]:
+    """Returns (sentences, algorithm_info). Pass feedback to regenerate with corrections."""
     raw = await _chat(
         system=narration_direct.SYSTEM_PROMPT,
-        user=narration_direct.build_user_prompt(description),
+        user=narration_direct.build_user_prompt(description, feedback=feedback),
         max_tokens=4096,
     )
     data = _parse_json(raw)
 
     if isinstance(data, list):
-        # Legacy plain list — no metadata
         return [str(s) for s in data], {}
 
     sentences = [str(s) for s in data.get("sentences", [])]
     algorithm = data.get("algorithm", {})
-    # scratchpad is consumed for correctness reasoning — strip it, don't pass downstream
     return sentences, algorithm
 
 
 _VERIFIER_SYSTEM = """\
 You are a technical accuracy checker for algorithm narrations.
-Given an algorithm name and its narration sentences, verify that the narration
-correctly and accurately explains that specific algorithm.
+Given an algorithm name and its narration sentences, verify correctness only.
 
-Return ONLY valid JSON in this exact shape:
+Return ONLY valid JSON:
 {
   "confidence": <integer 0-100>,
-  "corrections": ["<specific correction>", ...]
+  "corrections": ["<specific issue>", ...]
 }
 
-- confidence 95–100 = acceptable accuracy, no changes needed
-- corrections = list of specific fixes (empty if confidence >= 95)
-  Each correction must state the sentence number and exactly what to change.
-  Only include corrections for factual/technical errors, not style preferences.
+- confidence >= 95 means acceptable — corrections must be empty
+- corrections = factual/technical errors only, no style changes
+  State each issue clearly so the original author can fix it.
 """
 
 _CONFIDENCE_THRESHOLD = 95
 _MAX_VERIFY_ATTEMPTS = 4
 
 
-async def _verify_and_correct_narration(sentences: list[str], algorithm_name: str) -> tuple[list[str], bool]:
+async def _run_verifier(sentences: list[str], algorithm_name: str) -> tuple[int, list[str]]:
+    """Call verifier once. Returns (confidence, corrections)."""
+    numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
+    raw = await _chat(
+        system=_VERIFIER_SYSTEM,
+        user=f"Algorithm: {algorithm_name}\n\nNarration:\n{numbered}",
+        max_tokens=1024,
+        model=settings.VERIFIER_MODEL,
+    )
+    result = _parse_json(raw)
+    confidence = int(result.get("confidence", 100))
+    corrections = result.get("corrections", [])
+    return confidence, corrections
+
+
+async def _verify_with_generator_feedback(
+    description: str,
+    algorithm_name: str,
+    initial_sentences: list[str],
+    initial_algorithm_info: dict,
+) -> tuple[list[str], dict, bool]:
     """
-    Iteratively verify and correct narration up to _MAX_VERIFY_ATTEMPTS times.
-    Returns (sentences, flagged) where flagged=True means confidence never reached threshold.
+    Verify narration up to _MAX_VERIFY_ATTEMPTS times.
+    On failure, feed corrections back to the GENERATOR to regenerate.
+    Returns (sentences, algorithm_info, flagged).
     """
-    current = sentences
+    sentences = initial_sentences
+    algorithm_info = initial_algorithm_info
 
     for attempt in range(_MAX_VERIFY_ATTEMPTS):
-        numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(current))
-
         try:
-            raw = await _chat(
-                system=_VERIFIER_SYSTEM,
-                user=f"Algorithm: {algorithm_name}\n\nNarration:\n{numbered}",
-                max_tokens=1024,
-                model=settings.VERIFIER_MODEL,
-            )
-            result = _parse_json(raw)
+            confidence, corrections = await _run_verifier(sentences, algorithm_name)
         except Exception as e:
-            logger.warning("Verifier attempt %d failed (%s) — skipping", attempt + 1, e)
-            return current, False
-
-        confidence = int(result.get("confidence", 100))
-        corrections = result.get("corrections", [])
+            logger.warning("Verifier attempt %d failed (%s) — accepting narration", attempt + 1, e)
+            return sentences, algorithm_info, False
 
         logger.info("Verifier attempt %d/%d — confidence=%d%%", attempt + 1, _MAX_VERIFY_ATTEMPTS, confidence)
 
         if confidence >= _CONFIDENCE_THRESHOLD or not corrections:
-            logger.info("Narration accepted at %d%% confidence after %d attempt(s)", confidence, attempt + 1)
-            return current, False
+            logger.info("Narration accepted at %d%% confidence", confidence)
+            return sentences, algorithm_info, False
 
-        # Not yet acceptable — apply corrections if more attempts remain
+        # Corrections go back to the generator — not applied by the verifier
         if attempt < _MAX_VERIFY_ATTEMPTS - 1:
-            corrections_text = "\n".join(f"- {c}" for c in corrections)
-            fix_prompt = (
-                f"Narration for algorithm '{algorithm_name}':\n\n{numbered}\n\n"
-                f"Apply these corrections:\n{corrections_text}\n\n"
-                "Return ONLY a JSON array of the corrected sentences in the same order."
-            )
+            feedback = "\n".join(f"- {c}" for c in corrections)
+            logger.info("Sending %d correction(s) back to generator (attempt %d)", len(corrections), attempt + 2)
             try:
-                fixed_raw = await _chat(
-                    system="You are a precise editor. Apply the requested corrections and return a JSON array of sentences.",
-                    user=fix_prompt,
-                    max_tokens=2048,
-                    model=settings.VERIFIER_MODEL,
-                )
-                fixed = _parse_json(fixed_raw)
-                if isinstance(fixed, list) and len(fixed) == len(current):
-                    current = [str(s) for s in fixed]
-                    logger.info("Corrections applied — re-verifying")
-                else:
-                    logger.warning("Corrected list length mismatch — keeping current")
+                sentences, algorithm_info = await _generate_narration(description, feedback=feedback)
             except Exception as e:
-                logger.warning("Correction step failed (%s) — keeping current", e)
+                logger.warning("Generator retry failed (%s) — keeping current narration", e)
+                return sentences, algorithm_info, True
 
-    # Exhausted all attempts without reaching threshold
-    logger.warning("Narration flagged — confidence below %d%% after %d attempts", _CONFIDENCE_THRESHOLD, _MAX_VERIFY_ATTEMPTS)
-    return current, True
+    logger.warning("Narration flagged — never reached %d%% confidence after %d attempts", _CONFIDENCE_THRESHOLD, _MAX_VERIFY_ATTEMPTS)
+    return sentences, algorithm_info, True
 
 
 async def _generate_manim_code(description: str, narration_with_durations: list[dict], algorithm_info: dict | None = None, extra_hint: str = "") -> str:
@@ -166,7 +158,15 @@ async def run(job_id: str, prompt: str, jobs: dict) -> None:
         job["message"] = "Verifying narration accuracy..."
         logger.info("[%s] Starting narration verification", job_id)
         try:
-            narration, flagged = await _verify_and_correct_narration(narration, algorithm_name)
+            narration, algorithm_info, flagged = await _verify_with_generator_feedback(
+                description=prompt,
+                algorithm_name=algorithm_name,
+                initial_sentences=narration,
+                initial_algorithm_info=algorithm_info,
+            )
+            # Re-sync algorithm info in case generator updated it during retry
+            job["algorithm"] = {k: v for k, v in algorithm_info.items() if k != "steps"}
+            job["steps"] = algorithm_info.get("steps", job["steps"])
         except Exception as verify_err:
             logger.warning("[%s] Verifier failed (%s) — using original narration", job_id, verify_err)
             flagged = False

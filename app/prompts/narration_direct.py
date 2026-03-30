@@ -64,10 +64,18 @@ def _get_algorithm_hint(description: str) -> str:
     return ""
 
 
-def build_user_prompt(description: str) -> str:
-    return f"""Write narration for an animation of this algorithm:
+def build_user_prompt(description: str, feedback: str | None = None) -> str:
+    base = f"""Write narration for an animation of this algorithm:
 
 {description}
 
 Invent good example values, work through the algorithm in the scratchpad, then write the narration.
 Return the structured JSON."""
+    if feedback:
+        base += f"""
+
+PREVIOUS ATTEMPT WAS REJECTED by the accuracy verifier. Fix these issues:
+{feedback}
+
+Regenerate the full narration addressing every issue above."""
+    return base
