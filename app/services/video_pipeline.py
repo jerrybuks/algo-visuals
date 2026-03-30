@@ -146,14 +146,21 @@ async def run(job_id: str, prompt: str, jobs: dict) -> None:
         # 1. Generate narration + algorithm metadata
         job["status"] = "narrating"
         job["message"] = "Writing narration..."
+        logger.info("[%s] Starting narration generation", job_id)
         narration, algorithm_info = await _generate_narration(prompt)
+        logger.info("[%s] Narration done — %d sentences, algo=%s", job_id, len(narration), algorithm_info.get("name"))
         job["algorithm"] = {k: v for k, v in algorithm_info.items() if k != "steps"}
         job["steps"] = algorithm_info.get("steps", [])
 
         # 1b. Verify narration against algorithm name — correct if needed
         algorithm_name = algorithm_info.get("name", prompt)
         job["message"] = "Verifying narration accuracy..."
-        narration = await _verify_and_correct_narration(narration, algorithm_name)
+        logger.info("[%s] Starting narration verification", job_id)
+        try:
+            narration = await _verify_and_correct_narration(narration, algorithm_name)
+        except Exception as verify_err:
+            logger.warning("[%s] Verifier failed (%s) — using original narration", job_id, verify_err)
+        logger.info("[%s] Verification done", job_id)
         job["narration"] = narration
 
         with tempfile.TemporaryDirectory(prefix="algovis_") as tmpdir:
