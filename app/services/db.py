@@ -11,9 +11,13 @@
 #     narration JSONB DEFAULT '[]',
 #     algorithm JSONB,
 #     steps JSONB DEFAULT '[]',
+#     flagged BOOLEAN DEFAULT FALSE,
 #     is_public BOOLEAN DEFAULT TRUE,
 #     created_at TIMESTAMPTZ DEFAULT NOW()
 # );
+#
+# If table already exists, add the column:
+# ALTER TABLE generations ADD COLUMN IF NOT EXISTS flagged BOOLEAN DEFAULT FALSE;
 
 import json
 import logging
@@ -47,6 +51,7 @@ async def save_generation(job_id: str, job: dict) -> None:
         "narration": json.dumps(job.get("narration", [])),
         "algorithm": json.dumps(job.get("algorithm", {})),
         "steps": json.dumps(job.get("steps", [])),
+        "flagged": bool(job.get("flagged", False)),
         "is_public": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
