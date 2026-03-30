@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.prompts import narration_direct, manim_scene as manim_prompt
-from app.services.ai_generator import _chat, _strip_fences
+from app.services.ai_generator import _chat, _strip_fences, _parse_json
 from app.services.manim_renderer import (
     generate_audio_files,
     get_audio_duration,
@@ -29,7 +29,7 @@ async def _generate_narration(description: str) -> tuple[list[str], dict]:
         user=narration_direct.build_user_prompt(description),
         max_tokens=4096,
     )
-    data = json.loads(_strip_fences(raw))
+    data = _parse_json(raw)
 
     if isinstance(data, list):
         # Legacy plain list — no metadata
@@ -72,7 +72,7 @@ async def _verify_and_correct_narration(sentences: list[str], algorithm_name: st
     )
 
     try:
-        result = json.loads(_strip_fences(raw))
+        result = _parse_json(raw)
     except json.JSONDecodeError:
         logger.warning("Narration verifier returned invalid JSON — skipping correction")
         return sentences

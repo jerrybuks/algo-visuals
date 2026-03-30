@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,16 @@ def _strip_fences(text: str) -> str:
         end = -1 if lines[-1].strip() == "```" else len(lines)
         text = "\n".join(lines[1:end])
     return text.strip()
+
+
+def _parse_json(text: str) -> Any:
+    """Parse JSON tolerantly — strips fences, removes trailing commas and // comments."""
+    text = _strip_fences(text)
+    # Remove single-line comments
+    text = re.sub(r'//[^\n]*', '', text)
+    # Remove trailing commas before ] or }
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    return json.loads(text)
 
 
 async def _chat(system: str, user: str, max_tokens: int = 2048, model: str | None = None) -> str:
@@ -88,7 +99,7 @@ async def detect_algorithm_type(prompt: str, user_input: Any = None) -> Algorith
         max_tokens=1024,
     )
     try:
-        data = json.loads(_strip_fences(raw))
+        data = _parse_json(raw)
         category = data.get("category", "array")
         subtype = data.get("subtype") or "default"
         sample_input = user_input if user_input is not None else data.get("sample_input", [1, 2, 3, 4, 5, 6, 7, 8])
@@ -129,7 +140,7 @@ async def generate_algorithm_properties(
         max_tokens=1024,
     )
     try:
-        data = json.loads(_strip_fences(raw))
+        data = _parse_json(raw)
     except json.JSONDecodeError as e:
         raise AIGenerationError(f"Properties JSON parse failed: {e}\nRaw: {raw}") from e
 
@@ -202,7 +213,7 @@ async def generate_narration(
         max_tokens=2048,
     )
     try:
-        result = json.loads(_strip_fences(raw))
+        result = _parse_json(raw)
         # New structured format: {"sentences": [...], "stage_step_indices": [...]}
         if isinstance(result, dict):
             sentences = [str(s) for s in result.get("sentences", [])]
