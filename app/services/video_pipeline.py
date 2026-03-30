@@ -122,7 +122,7 @@ async def _generate_manim_code(description: str, narration_with_durations: list[
     if extra_hint:
         user_prompt += f"\n\n{extra_hint}"
     error = None
-    for attempt in range(3):
+    for attempt in range(2):
         raw = await _chat(
             system=manim_prompt.SYSTEM_PROMPT,
             user=user_prompt,
@@ -134,7 +134,7 @@ async def _generate_manim_code(description: str, narration_with_durations: list[
             return code
         user_prompt += f"\n\nPREVIOUS ATTEMPT FAILED: {error}\nFix it and regenerate the complete script."
 
-    raise AIGenerationError(f"Manim code generation failed after 3 attempts: {error}")
+    raise AIGenerationError(f"Manim code generation failed after 2 attempts: {error}")
 
 
 async def run(job_id: str, prompt: str, jobs: dict) -> None:
@@ -188,7 +188,7 @@ async def run(job_id: str, prompt: str, jobs: dict) -> None:
             loop = asyncio.get_event_loop()
             render_hint = ""
             raw_video = None
-            for render_attempt in range(3):
+            for render_attempt in range(2):
                 scene_code = await _generate_manim_code(prompt, narration_with_durations, algorithm_info=algorithm_info, extra_hint=render_hint)
                 # Save generated code for debugging (overwritten each attempt)
                 debug_dir = Path("debug_scenes")
@@ -210,7 +210,7 @@ async def run(job_id: str, prompt: str, jobs: dict) -> None:
                         "check all list accesses with len() guards). Regenerate the complete script."
                     )
                     job["status"] = "generating"
-                    job["message"] = f"Render failed, fixing scene code (attempt {render_attempt + 2}/3)..."
+                    job["message"] = f"Render failed, fixing scene code (retry)..."
 
             # 6. Mix audio + video
             job["status"] = "mixing"
