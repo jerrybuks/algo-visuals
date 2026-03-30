@@ -30,10 +30,10 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
-async def _chat(system: str, user: str, max_tokens: int = 2048) -> str:
+async def _chat(system: str, user: str, max_tokens: int = 2048, model: str | None = None) -> str:
     try:
         response = await get_client().chat.completions.create(
-            model=settings.AI_MODEL,
+            model=model or settings.AI_MODEL,
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},

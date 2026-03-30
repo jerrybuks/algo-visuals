@@ -41,6 +41,78 @@ async def _generate_narration(description: str) -> tuple[list[str], dict]:
     return sentences, algorithm
 
 
+_VERIFIER_SYSTEM = """\
+You are a technical accuracy checker for algorithm narrations.
+Given an algorithm name and its narration sentences, verify that the narration
+correctly and accurately explains that specific algorithm.
+
+Return ONLY valid JSON in this exact shape:
+{
+  "confidence": <integer 0-100>,
+  "corrections": ["<specific correction>", ...]
+}
+
+- confidence 100 = narration is fully accurate, no changes needed
+- corrections = list of specific fixes (empty list if confidence is 100)
+  Each correction must state the sentence number and exactly what to change.
+  Only include corrections for factual/technical errors, not style preferences.
+"""
+
+
+async def _verify_and_correct_narration(sentences: list[str], algorithm_name: str) -> list[str]:
+    """Verify narration against algorithm name. Return corrected sentences if needed."""
+    numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
+    user_prompt = f"Algorithm: {algorithm_name}\n\nNarration:\n{numbered}"
+
+    raw = await _chat(
+        system=_VERIFIER_SYSTEM,
+        user=user_prompt,
+        max_tokens=1024,
+        model=settings.VERIFIER_MODEL,
+    )
+
+    try:
+        result = json.loads(_strip_fences(raw))
+    except json.JSONDecodeError:
+        logger.warning("Narration verifier returned invalid JSON — skipping correction")
+        return sentences
+
+    confidence = int(result.get("confidence", 100))
+    corrections = result.get("corrections", [])
+
+    if confidence == 100 or not corrections:
+        logger.info("Narration verified at %d%% confidence — no corrections needed", confidence)
+        return sentences
+
+    logger.info("Narration verified at %d%% confidence — applying %d correction(s)", confidence, len(corrections))
+
+    corrections_text = "\n".join(f"- {c}" for c in corrections)
+    fix_prompt = (
+        f"Here are the original narration sentences for the algorithm '{algorithm_name}':\n\n"
+        f"{numbered}\n\n"
+        f"Apply these corrections:\n{corrections_text}\n\n"
+        "Return ONLY a JSON array of the corrected sentences in the same order, e.g.:\n"
+        '["sentence 1", "sentence 2", ...]'
+    )
+
+    fixed_raw = await _chat(
+        system="You are a precise editor. Apply the requested corrections to narration sentences and return a JSON array.",
+        user=fix_prompt,
+        max_tokens=2048,
+        model=settings.VERIFIER_MODEL,
+    )
+
+    try:
+        fixed = json.loads(_strip_fences(fixed_raw))
+        if isinstance(fixed, list) and len(fixed) == len(sentences):
+            return [str(s) for s in fixed]
+        logger.warning("Corrected narration had wrong length — using original")
+        return sentences
+    except json.JSONDecodeError:
+        logger.warning("Correction response was not valid JSON — using original")
+        return sentences
+
+
 async def _generate_manim_code(description: str, narration_with_durations: list[dict], algorithm_info: dict | None = None, extra_hint: str = "") -> str:
     user_prompt = manim_prompt.build_user_prompt(
         description=description,
@@ -75,9 +147,14 @@ async def run(job_id: str, prompt: str, jobs: dict) -> None:
         job["status"] = "narrating"
         job["message"] = "Writing narration..."
         narration, algorithm_info = await _generate_narration(prompt)
-        job["narration"] = narration
         job["algorithm"] = {k: v for k, v in algorithm_info.items() if k != "steps"}
         job["steps"] = algorithm_info.get("steps", [])
+
+        # 1b. Verify narration against algorithm name — correct if needed
+        algorithm_name = algorithm_info.get("name", prompt)
+        job["message"] = "Verifying narration accuracy..."
+        narration = await _verify_and_correct_narration(narration, algorithm_name)
+        job["narration"] = narration
 
         with tempfile.TemporaryDirectory(prefix="algovis_") as tmpdir:
             tmp = Path(tmpdir)
