@@ -52,65 +52,74 @@ Return ONLY valid JSON in this exact shape:
   "corrections": ["<specific correction>", ...]
 }
 
-- confidence 100 = narration is fully accurate, no changes needed
-- corrections = list of specific fixes (empty list if confidence is 100)
+- confidence 95–100 = acceptable accuracy, no changes needed
+- corrections = list of specific fixes (empty if confidence >= 95)
   Each correction must state the sentence number and exactly what to change.
   Only include corrections for factual/technical errors, not style preferences.
 """
 
+_CONFIDENCE_THRESHOLD = 95
+_MAX_VERIFY_ATTEMPTS = 4
 
-async def _verify_and_correct_narration(sentences: list[str], algorithm_name: str) -> list[str]:
-    """Verify narration against algorithm name. Return corrected sentences if needed."""
-    numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sentences))
-    user_prompt = f"Algorithm: {algorithm_name}\n\nNarration:\n{numbered}"
 
-    raw = await _chat(
-        system=_VERIFIER_SYSTEM,
-        user=user_prompt,
-        max_tokens=1024,
-        model=settings.VERIFIER_MODEL,
-    )
+async def _verify_and_correct_narration(sentences: list[str], algorithm_name: str) -> tuple[list[str], bool]:
+    """
+    Iteratively verify and correct narration up to _MAX_VERIFY_ATTEMPTS times.
+    Returns (sentences, flagged) where flagged=True means confidence never reached threshold.
+    """
+    current = sentences
 
-    try:
-        result = _parse_json(raw)
-    except json.JSONDecodeError:
-        logger.warning("Narration verifier returned invalid JSON — skipping correction")
-        return sentences
+    for attempt in range(_MAX_VERIFY_ATTEMPTS):
+        numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(current))
 
-    confidence = int(result.get("confidence", 100))
-    corrections = result.get("corrections", [])
+        try:
+            raw = await _chat(
+                system=_VERIFIER_SYSTEM,
+                user=f"Algorithm: {algorithm_name}\n\nNarration:\n{numbered}",
+                max_tokens=1024,
+                model=settings.VERIFIER_MODEL,
+            )
+            result = _parse_json(raw)
+        except Exception as e:
+            logger.warning("Verifier attempt %d failed (%s) — skipping", attempt + 1, e)
+            return current, False
 
-    if confidence == 100 or not corrections:
-        logger.info("Narration verified at %d%% confidence — no corrections needed", confidence)
-        return sentences
+        confidence = int(result.get("confidence", 100))
+        corrections = result.get("corrections", [])
 
-    logger.info("Narration verified at %d%% confidence — applying %d correction(s)", confidence, len(corrections))
+        logger.info("Verifier attempt %d/%d — confidence=%d%%", attempt + 1, _MAX_VERIFY_ATTEMPTS, confidence)
 
-    corrections_text = "\n".join(f"- {c}" for c in corrections)
-    fix_prompt = (
-        f"Here are the original narration sentences for the algorithm '{algorithm_name}':\n\n"
-        f"{numbered}\n\n"
-        f"Apply these corrections:\n{corrections_text}\n\n"
-        "Return ONLY a JSON array of the corrected sentences in the same order, e.g.:\n"
-        '["sentence 1", "sentence 2", ...]'
-    )
+        if confidence >= _CONFIDENCE_THRESHOLD or not corrections:
+            logger.info("Narration accepted at %d%% confidence after %d attempt(s)", confidence, attempt + 1)
+            return current, False
 
-    fixed_raw = await _chat(
-        system="You are a precise editor. Apply the requested corrections to narration sentences and return a JSON array.",
-        user=fix_prompt,
-        max_tokens=2048,
-        model=settings.VERIFIER_MODEL,
-    )
+        # Not yet acceptable — apply corrections if more attempts remain
+        if attempt < _MAX_VERIFY_ATTEMPTS - 1:
+            corrections_text = "\n".join(f"- {c}" for c in corrections)
+            fix_prompt = (
+                f"Narration for algorithm '{algorithm_name}':\n\n{numbered}\n\n"
+                f"Apply these corrections:\n{corrections_text}\n\n"
+                "Return ONLY a JSON array of the corrected sentences in the same order."
+            )
+            try:
+                fixed_raw = await _chat(
+                    system="You are a precise editor. Apply the requested corrections and return a JSON array of sentences.",
+                    user=fix_prompt,
+                    max_tokens=2048,
+                    model=settings.VERIFIER_MODEL,
+                )
+                fixed = _parse_json(fixed_raw)
+                if isinstance(fixed, list) and len(fixed) == len(current):
+                    current = [str(s) for s in fixed]
+                    logger.info("Corrections applied — re-verifying")
+                else:
+                    logger.warning("Corrected list length mismatch — keeping current")
+            except Exception as e:
+                logger.warning("Correction step failed (%s) — keeping current", e)
 
-    try:
-        fixed = json.loads(_strip_fences(fixed_raw))
-        if isinstance(fixed, list) and len(fixed) == len(sentences):
-            return [str(s) for s in fixed]
-        logger.warning("Corrected narration had wrong length — using original")
-        return sentences
-    except json.JSONDecodeError:
-        logger.warning("Correction response was not valid JSON — using original")
-        return sentences
+    # Exhausted all attempts without reaching threshold
+    logger.warning("Narration flagged — confidence below %d%% after %d attempts", _CONFIDENCE_THRESHOLD, _MAX_VERIFY_ATTEMPTS)
+    return current, True
 
 
 async def _generate_manim_code(description: str, narration_with_durations: list[dict], algorithm_info: dict | None = None, extra_hint: str = "") -> str:
@@ -157,11 +166,13 @@ async def run(job_id: str, prompt: str, jobs: dict) -> None:
         job["message"] = "Verifying narration accuracy..."
         logger.info("[%s] Starting narration verification", job_id)
         try:
-            narration = await _verify_and_correct_narration(narration, algorithm_name)
+            narration, flagged = await _verify_and_correct_narration(narration, algorithm_name)
         except Exception as verify_err:
             logger.warning("[%s] Verifier failed (%s) — using original narration", job_id, verify_err)
-        logger.info("[%s] Verification done", job_id)
+            flagged = False
+        logger.info("[%s] Verification done — flagged=%s", job_id, flagged)
         job["narration"] = narration
+        job["flagged"] = flagged
 
         with tempfile.TemporaryDirectory(prefix="algovis_") as tmpdir:
             tmp = Path(tmpdir)
