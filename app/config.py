@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     #   openai/gpt-4-turbo
     #   meta-llama/llama-3.1-70b-instruct
     AI_MODEL: str = "anthropic/claude-sonnet-4.6"
-    VERIFIER_MODEL: str = "openai/gpt-4o-mini"
+    VERIFIER_MODEL: str = "openai/gpt-4o"
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 
     # TTS provider — "edge" (default, free) | "minimax" | "openai" | "elevenlabs"
