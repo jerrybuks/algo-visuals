@@ -1,9 +1,8 @@
 services:
   - type: web
     name: algo-visuals
-    env: python
-    buildCommand: ./build.sh
-    startCommand: fastapi run main.py --host 0.0.0.0 --port $PORT
+    env: docker
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
