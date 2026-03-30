@@ -2,7 +2,7 @@
 set -e
 
 # Install system packages required by Manim (Cairo + Pango for Text rendering, FFmpeg for video)
-apt-get install -y --no-install-recommends \
+sudo apt-get install -y --no-install-recommends \
     ffmpeg \
     libcairo2-dev \
     libpango1.0-dev \
