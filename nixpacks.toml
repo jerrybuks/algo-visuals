@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "cairo", "pango", "pkg-config", "gcc", "libffi"]
+aptPkgs = ["ffmpeg", "libcairo2-dev", "libpango1.0-dev", "libpangocairo-1.0-0", "pkg-config", "fonts-dejavu-core", "python3-dev", "gcc", "libffi-dev"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
