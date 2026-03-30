@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: algo-visuals
+    env: python
+    buildCommand: ./build.sh
+    startCommand: fastapi run main.py --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AI_MODEL
+        value: openai/gpt-4.5
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: TTS_PROVIDER
+        value: edge
+      - key: EDGE_TTS_VOICE
+        value: en-US-AriaNeural
+      - key: MINIMAX_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: VIDEOS_DIR
+        value: /tmp/videos
+      - key: ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:////tmp/algo_visuals.db
