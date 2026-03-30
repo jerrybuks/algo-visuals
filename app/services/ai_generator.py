@@ -18,6 +18,7 @@ def get_client() -> AsyncOpenAI:
         _client = AsyncOpenAI(
             api_key=settings.OPENROUTER_API_KEY,
             base_url=settings.OPENROUTER_BASE_URL,
+            timeout=90.0,
         )
     return _client
 

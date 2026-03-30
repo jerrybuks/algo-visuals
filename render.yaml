@@ -7,7 +7,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: AI_MODEL
-        value: anthropic/claude-sonnet-4-6
+        value: anthropic/claude-sonnet-4.6
       - key: OPENROUTER_BASE_URL
         value: https://openrouter.ai/api/v1
       - key: TTS_PROVIDER
