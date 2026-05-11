@@ -27,44 +27,50 @@ pytest tests/test_sandbox.py::test_fn # single test
 
 Copy `.env.example` to `.env` and fill in:
 - `OPENROUTER_API_KEY` — from openrouter.ai (format: `sk-or-v1-...`)
-- `AI_MODEL` — any OpenRouter model ID (e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`)
+- `AI_MODEL` — OpenRouter model ID for narration/Manim generation (default: `anthropic/claude-sonnet-4.6` — use **dot** not dash)
+- `VERIFIER_MODEL` — model for narration accuracy checker (default: `openai/gpt-4o`)
 
-All other env vars have sensible defaults.
+All other env vars have sensible defaults. TTS defaults to `edge` (free). Supabase and Cloudinary are optional — pipeline degrades gracefully without them.
 
 ## Architecture
 
-This is a **stateless request/response** FastAPI backend. Each `POST /api/v1/generate` runs a full AI pipeline and stores the result in SQLite by UUID for later retrieval.
+FastAPI backend. Each `POST /api/v1/generate` runs a full video generation pipeline and streams status via SSE (`GET /api/v1/status/{job_id}`).
 
-### Request lifecycle
+### Request lifecycle (`app/services/video_pipeline.py`)
 
 ```
 POST /api/v1/generate
-  → app/api/v1/generate.py        (route handler, DB save)
-  → app/services/pipeline.py      (orchestrator — all stages run here)
-      1. ai_generator.generate_algorithm_code()      → raw Python code string
-      2. sandbox.pre_scan()                          → AST safety check (blocks imports etc.)
-      3. ai_generator.generate_algorithm_properties() → name, complexity, sample_input, expected_output
-      4. sandbox.execute()                           → runs code in isolated process, collects steps
-      5. tracer.build_trace()                        → normalises raw steps → StepTrace
-      6. validator.run_all_checks()                  → 5 independent checks
-      7. confidence.compute()                        → 0.0–1.0 score
-      8. scene_builder.build()                       → StepTrace → SceneTimeline (frontend-ready)
-      9. ai_generator.generate_narration()           → list[str] narration sentences
-     10. assemble + return GenerateResponse
+  → background task: video_pipeline.run(job_id, prompt, jobs)
+      1. _generate_narration()              → sentences + algorithm metadata (Claude)
+      2. _verify_with_generator_feedback()  → up to 4 verify attempts; corrections fed back to generator
+      3. generate_audio_files()             → TTS per sentence (edge-tts / MiniMax / OpenAI / ElevenLabs)
+      4. get_audio_duration()               → per-sentence durations for Manim timing
+      5. _generate_manim_code()             → full Manim scene (Claude, 1 retry on render failure)
+      6. render_manim()                     → subprocess, produces raw video
+      7. mix_audio_video()                  → ffmpeg mux
+      8. upload_video()                     → Cloudinary CDN (falls back to local /videos/)
+      9. db.save_generation()              → Supabase upsert (best-effort)
 ```
 
 ### Key design decisions
 
-**LLM layer** (`app/services/ai_generator.py`): Uses the `openai` SDK pointed at OpenRouter (`OPENROUTER_BASE_URL`). Switching models is a one-line `.env` change. All three Claude calls (`generate_algorithm_code`, `generate_algorithm_properties`, `generate_narration`) go through the shared `_chat()` helper.
+**LLM layer** (`app/services/ai_generator.py`): Uses `openai` SDK pointed at OpenRouter. `_chat(system, user, max_tokens, model=None)` is the shared helper — pass `model=` to override per-call. `_parse_json()` strips fences, `//` comments, and trailing commas before `json.loads` to handle Claude's imperfect JSON output.
 
-**Sandbox** (`app/services/sandbox.py`): 4-layer protection — prompt instructs no imports → AST pre-scan rejects forbidden nodes → restricted `__builtins__` dict → `multiprocessing.Process` with hard timeout + kill. Generated code must define `def run(arr: list, steps: list) -> any` and call `record_step()` to emit trace events.
+**Narration verifier** (`app/services/video_pipeline.py`): `_run_verifier()` calls `VERIFIER_MODEL` (gpt-4o) and returns `(confidence, corrections)`. It **evaluates only** — corrections go back to the generator (`_generate_narration(feedback=...)`) to regenerate. Up to 4 attempts. If confidence never reaches 95%, the job is marked `flagged=True` in the DB and the pipeline continues.
 
-**Trace → Timeline**: `tracer.py` normalises the raw step dicts the sandbox collects into a typed `StepTrace`. `scene_builder.py` then converts that into a `SceneTimeline` with per-frame `array_state`, `highlight_indices`, and `active_connections` — ready for the frontend animation renderer to consume directly.
+**Manim boundaries**: All generated scenes must keep content within x ∈ [-6.2, 6.2], y ∈ [-1.8, 2.6]. Enforced via prompt rules in `app/prompts/manim_scene.py` and validated in `app/services/manim_renderer.py::_validate_manim_code()`.
 
-**Partial failure**: The pipeline never raises to the caller. Each stage failure sets `status: "partial"` or `status: "failed"` and appends to `errors[]`, so the frontend always gets a structured response.
+**Feedback loops**: Narration generator has 1 feedback pass (2 total attempts). Manim code generator has 1 retry on render crash. Both limits exist to control token spend.
 
-**Prompt templates** (`app/prompts/`): Treat these like code. The code generation prompt is the highest-leverage file — it controls sandbox safety (instructs the model to call `record_step()` and never import) and trace quality.
+**TTS**: `app/services/manim_renderer.py::generate_audio_files()` dispatches to the provider set in `TTS_PROVIDER`. Failures are silent — pipeline continues with 4s-per-sentence fallback durations.
 
-### Response shape
+**Persistence**: Supabase (`app/services/db.py`) stores completed jobs. The `generations` table schema is in the file header. Run this migration if the table already exists:
+```sql
+ALTER TABLE generations ADD COLUMN IF NOT EXISTS flagged BOOLEAN DEFAULT FALSE;
+```
 
-`GenerateResponse` (defined in `app/schemas/response.py`) is the single top-level type returned by both endpoints. It contains `algorithm`, `code`, `narration`, `trace` (StepTrace), `scene_timeline` (SceneTimeline), `validation`, `confidence_score`, `status`, and `errors`.
+### Deployment
+
+- **Backend**: Railway (Docker via `railway.json`) or Render (`render.yaml`, `env: docker`)
+- **Frontend**: Vercel (`algo-visuals-ui/`). Set `VITE_API_URL` env var in Vercel dashboard to the Railway URL.
+- Docker is required — Manim needs Cairo, Pango, and FFmpeg system packages.
