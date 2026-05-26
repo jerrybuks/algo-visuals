@@ -393,14 +393,14 @@ def render_manim(scene_code: str, output_dir: Path) -> Path:
         [
             "manim", "render",
             str(scene_file), "AlgorithmScene",
-            "-qm",                        # 720p — fast + good quality
+            "-ql",                        # 480p — faster render for limited CPU
             "--media_dir", str(media_dir),
             "--disable_caching",
         ],
         capture_output=True,
         text=True,
         cwd=str(output_dir),
-        timeout=180,
+        timeout=360,
     )
 
     if result.returncode != 0:
